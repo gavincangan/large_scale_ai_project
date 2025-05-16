@@ -16,11 +16,11 @@ from utils import DatasetKeys
 N = 10 # Number of samples
 
 ### Create a directory with dummy images
-if not os.path.exists("imgs"):
-    os.makedirs("imgs")
+if not os.path.exists("data/imgs"):
+    os.makedirs("data/imgs")
 for i in range(N):
     img = np.random.randint(0, 255, (64, 64, 3)).astype(np.uint8)
-    Image.fromarray(img).save(f"imgs/img_{i}.png")
+    Image.fromarray(img).save(f"data/imgs/img_{i}.png")
 
 
 ### Create robot trajectory and sensor data
@@ -51,13 +51,13 @@ df = pd.DataFrame({
     DatasetKeys.SENSOR_DATA.value: sensor_data,
 
     # Loading images externally
-    DatasetKeys.IMAGE.value: [f"imgs/img_{i}.png" for i in range(N)],
+    DatasetKeys.IMAGE.value: [f"data/imgs/img_{i}.png" for i in range(N)],
 })
 
 table = pa.Table.from_pandas(df)
-pq.write_table(table, "data.pq")
+pq.write_table(table, "data/data.pq")
 
-loaded_table = pq.read_table("data.pq")
+loaded_table = pq.read_table("data/data.pq")
 
 
 
