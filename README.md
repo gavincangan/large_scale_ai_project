@@ -12,8 +12,8 @@ Extend Parquet DataLoader from Assignment #2 to be a multimodal data loader with
     - Parquet for videos: strings that point to paths for mp4 videos, and metadata on video fps.
     - Parquet for image: string to path, single image for whole trajectory.
     - Parquet for text: Directly file, single text for whole video.
-    - Parquet for robot traj: Directly in file, list of values including times of data.
-    - Parquet for sensor data: Directly in file, list of values including times of data.
+    - Parquet for robot traj: Directly in file, list of values including times of data as index 0. Shape [data_length, N+1].
+    - Parquet for sensor data: Directly in file, list of values including times of data. Shape [data_length, N+1].
 
 - ParquetDataset __getitem__: 
     - Loads everything, video loads from file entire length, video metadata contains length of each video sequence, index is first mapped to correct video.
