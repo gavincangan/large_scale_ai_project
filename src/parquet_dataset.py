@@ -12,16 +12,20 @@ class TimeSeriesParquetDataset(Dataset):
     def __init__(
         self,
         parquet_file: Path,
-        acts_length_sec: float,
-        obs_length_sec: float,
-        sample_rate: float = 1.0,
+        sampling_rate: int = 1,
+        acts_length_sec: float = 1.0,
+        obs_length_sec: float = 1.0,
         device = None,
     ):
         super().__init__()
 
         self.parquet_file = parquet_file
         self._ds = pq.read_table(parquet_file, memory_map=True)
-        
+
+        self.sampling_rate = sampling_rate
+        self.acts_length_sec = acts_length_sec
+        self.obs_length_sec = obs_length_sec
+
         self.text_col = self._ds[DatasetKeys.TEXT.value]
         self.actions_col = self._ds[DatasetKeys.ACTIONS.value]
         self.observations_col = self._ds[DatasetKeys.OBSERVATIONS.value]
@@ -30,10 +34,8 @@ class TimeSeriesParquetDataset(Dataset):
         self._init_cumulative_indices()
 
         self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
-        self.text_col = self.tokenizer(self.text_col, padding=True, truncation=True, return_tensors="pt")
 
-        self.acts_length_sec = acts_length_sec
-        self.obs_length_sec = obs_length_sec
+        self.text_col = self.tokenizer(self.text_col.to_pylist(), padding=True, truncation=True, return_tensors="pt")
 
         if device is None:
             if torch.cuda.is_available():
@@ -51,12 +53,14 @@ class TimeSeriesParquetDataset(Dataset):
         self.robot_dof = len(self.actions_col[0][0])
         self.observation_dim = len(self.observations_col[0][0])
 
-        self.actions_time_steps = len(self.actions_col[0])
-        self.actions_freq = np.median(1.0/np.diff(np.array(self.actions_time_steps[:, 0])))
+        actions_first_np = np.array(self.actions_col[0].as_py(), dtype=np.float32) # from the first episode
+        actions_time_steps = actions_first_np[:, 0]  # time steps are in the first column
+        self.actions_freq = np.median(1.0/np.diff(actions_time_steps))
         self.actions_seq_length = int(self.acts_length_sec * self.actions_freq)
 
-        self.observations_time_steps = len(self.observations_col[0])
-        self.observations_freq = np.median(1.0/np.diff(np.array(self.observations_time_steps[:, 0])))
+        observations_first_np = np.array(self.observations_col[0].as_py(), dtype=np.float32) # from the first episode
+        observations_time_steps = observations_first_np[:, 0] # time steps are in the first column
+        self.observations_freq = np.median(1.0/np.diff(np.array(observations_time_steps)))
         self.observations_seq_length = int(self.obs_length_sec * self.observations_freq)
 
         def sanity_check_function(actions, observations):
@@ -74,48 +78,70 @@ class TimeSeriesParquetDataset(Dataset):
 
     def _init_cumulative_indices(self):
         # Actions
-        self._actions_cumulative_indices = [0]
-        self._actions_episode_lengths = []
-        for i in range(len(self.actions_col)):
-            self._actions_cumulative_indices.append(self._actions_cumulative_indices[-1] + len(self.actions_col[i]))
-            self._actions_episode_lengths.append(len(self.actions_col[i]))
+        self._actions_episode_lengths = np.array([len(actions) for actions in self.actions_col])
+        self._actions_cumulative_indices = np.cumsum(self._actions_episode_lengths)
+        self._actions_cumulative_indices = np.insert(self._actions_cumulative_indices, 0, 0)
 
         # Observations
-        self._observations_cumulative_indices = [0]
-        self._observations_episode_lengths = []
-        for i in range(len(self.observations_col)):
-            self._observations_cumulative_indices.append(self._observations_cumulative_indices[-1] + len(self.observations_col[i]))
-            self._observations_episode_lengths.append(len(self.observations_col[i]))
+        self._observations_episode_lengths = np.array([len(observations) for observations in self.observations_col])
+        self._observations_cumulative_indices = np.cumsum(self._observations_episode_lengths)
+        self._observations_cumulative_indices = np.insert(self._observations_cumulative_indices, 0, 0)
 
-    def _locate(self, global_idx: int):
+    def _locate_action(self, global_idx: int):
         # Find the episode index for the actions
         actions_episode_idx = bisect.bisect_left(self._actions_cumulative_indices, global_idx) - 1
+        
+        actions_episode_idx = min(actions_episode_idx, len(self._actions_episode_lengths) - 1)
+        if actions_episode_idx < 0:
+            actions_episode_idx = 0
+        
         actions_start_idx = self._actions_cumulative_indices[actions_episode_idx]
         actions_local_idx = global_idx - actions_start_idx
+        if actions_local_idx < 0:
+            actions_local_idx = 0
 
+        return actions_episode_idx, actions_local_idx
+
+    def _locate_observation(self, global_idx: int):
         # Find the episode index for the observations
         observations_episode_idx = bisect.bisect_left(self._observations_cumulative_indices, global_idx) - 1
+        
+        observations_episode_idx = min(observations_episode_idx, len(self._observations_episode_lengths) - 1)
+        if observations_episode_idx < 0:
+            observations_episode_idx = 0
+        
         observations_start_idx = self._observations_cumulative_indices[observations_episode_idx]
         observations_local_idx = global_idx - observations_start_idx
 
-        return actions_episode_idx, actions_local_idx, observations_episode_idx, observations_local_idx
+        return observations_episode_idx, observations_local_idx
 
     def __len__(self):
-        return 0
+        return min(self._actions_cumulative_indices[-1], self._observations_cumulative_indices[-1]) - 1
 
     def __getitem__(self, idx: int):
         # Get the global index
-        global_idx = idx - 1
+        global_time = idx * self.sampling_rate
 
         # Locate the episode and local index for both actions and observations
-        actions_episode_idx, actions_local_idx, observations_episode_idx, observations_local_idx = self._locate(global_idx)
+        actions_global_idx = self.actions_freq * global_time
+        actions_episode_idx, actions_local_idx = self._locate_action(actions_global_idx)
+
+        observations_global_idx = self.observations_freq * global_time
+        observation_episode_idx, observations_local_idx = self._locate_observation(observations_global_idx)
+
+        # Sanity check
+        if actions_episode_idx != observation_episode_idx:
+            raise ValueError(f"Actions and observations are not from the same episode: {actions_episode_idx} != {observation_episode_idx}")
+        episode_idx = actions_episode_idx
 
         # Get the actions and observations
         actions_end_idx = actions_local_idx + int(self.acts_length_sec * self.actions_freq)
-        actions = self.actions_col[actions_episode_idx][actions_local_idx:actions_end_idx]
+        action_episode_np = np.array(self.actions_col[episode_idx].as_py(), dtype=np.float32)
+        actions = action_episode_np[actions_local_idx:actions_end_idx]
 
         observations_end_idx = observations_local_idx + int(self.obs_length_sec * self.observations_freq)
-        observations = self.observations_col[observations_episode_idx][observations_local_idx:observations_end_idx]
+        observation_episode_np = np.array(self.observations_col[episode_idx].as_py(), dtype=np.float32)
+        observations = observation_episode_np[observations_local_idx:observations_end_idx]
 
         # Sanity check
         self.sanity_check_function(actions, observations)
@@ -135,7 +161,7 @@ class TimeSeriesParquetDataset(Dataset):
         assert len(observations) == self.observations_seq_length, f"Observations length mismatch: {len(observations)} != {self.observations_seq_length}"
 
         # Get the text data
-        text_data = self.text_col[global_idx]
+        text_data = self.text_col[episode_idx]
         
         # Convert everything to tensors
         actions = torch.tensor(actions, dtype=torch.float32)
@@ -147,3 +173,21 @@ class TimeSeriesParquetDataset(Dataset):
             DatasetKeys.ACTIONS.value: actions,
             DatasetKeys.OBSERVATIONS.value: observations
         }
+
+
+if __name__ == "__main__":
+    parquet_file = Path("data/data.pq")
+    print(f"Loading dataset from {parquet_file.absolute()}")
+
+    acts_length_sec = 1.0
+    obs_length_sec = 1.0
+
+    dataset = TimeSeriesParquetDataset(parquet_file, acts_length_sec, obs_length_sec)
+
+    dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+
+    for batch in dataloader:
+        print(batch[DatasetKeys.TEXT.value])
+        print(batch[DatasetKeys.ACTIONS.value].shape)
+        print(batch[DatasetKeys.OBSERVATIONS.value].shape)
+        break
