@@ -13,7 +13,7 @@ from utils import DatasetKeys
 
 
 
-N = 10
+N = 10 # Number of samples
 
 ### Create a directory with dummy images
 if not os.path.exists("imgs"):
@@ -21,6 +21,7 @@ if not os.path.exists("imgs"):
 for i in range(N):
     img = np.random.randint(0, 255, (64, 64, 3)).astype(np.uint8)
     Image.fromarray(img).save(f"imgs/img_{i}.png")
+
 
 ### Create robot trajectory and sensor data
 traj_data = []
@@ -42,7 +43,7 @@ for i in range(N):
     sensor_data.append(np.concatenate((timestamp.reshape(-1,1), sensor), axis=1).tolist())
 
 
-
+### Store as Parquet file
 df = pd.DataFrame({
     DatasetKeys.TEXT.value: ["This is a test sentence."] * N,
     # First entry of each list is the timestamp.
@@ -53,11 +54,10 @@ df = pd.DataFrame({
     DatasetKeys.IMAGE.value: [f"imgs/img_{i}.png" for i in range(N)],
 })
 
-### Store as Parquet file
 table = pa.Table.from_pandas(df)
-pq.write_table(table, "test.pq")
+pq.write_table(table, "data.pq")
 
-new_table = pq.read_table("test.pq")
+loaded_table = pq.read_table("data.pq")
 
-breakpoint()
+
 
