@@ -5,6 +5,6 @@ class DatasetKeys(Enum):
     IMAGE = "image"
     AUDIO = "audio"
     VIDEO = "video"
-    ROBOT_TRAJ = "robot_traj"
-    SENSOR_DATA = "sensor_data"
+    ACTIONS = "actions"
+    OBSERVATIONS = "observations"
 
