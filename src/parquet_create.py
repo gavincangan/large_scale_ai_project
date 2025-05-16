@@ -15,8 +15,8 @@ N = 10
 df = pd.DataFrame({
     DatasetKeys.TEXT.value: ["This is a test sentence."] * N,
     # DatasetKeys.IMAGE.value: [np.random.rand(3, 64, 64).astype(np.float32)] * N,
-    DatasetKeys.ROBOT_TRAJ.value: [np.random.rand(100, 3).astype(np.float32).tolist()] * N,
-    DatasetKeys.SENSOR_DATA.value: [np.random.rand(100, 3).astype(np.float32).tolist()] * N,
+    DatasetKeys.ROBOT_TRAJ.value: [np.random.rand(np.random.randint(10, 100), 3).tolist() for _ in range(N)],
+    DatasetKeys.SENSOR_DATA.value: [np.random.rand(np.random.randint(10, 100), 7).tolist() for _ in range(N)],
 })
 
 table = pa.Table.from_pandas(df)
