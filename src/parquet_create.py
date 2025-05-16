@@ -23,41 +23,43 @@ for i in range(N):
     Image.fromarray(img).save(f"data/imgs/img_{i}.png")
 
 
-### Create robot trajectory and sensor data
-traj_data = []
+### Create robot actions and observations
+act_data = []
 for i in range(N):
-    sampling_rate = 150
-    traj_length = np.random.randint(50, 200)
-    timestamp = np.arange(traj_length) / sampling_rate
-    traj = np.random.rand(traj_length, 3)
+    sampling_rate = 100
+    act_length = np.random.randint(20, 200)
+    timestamp = np.arange(act_length) / sampling_rate
+    acts = np.random.rand(act_length, 3)
 
-    traj_data.append(np.concatenate((timestamp.reshape(-1,1), traj), axis=1).tolist())
+    act_data.append(np.concatenate((timestamp.reshape(-1,1), acts), axis=1).tolist())
 
-sensor_data = []
+obs_data = []
 for i in range(N):
     sampling_rate = 50
-    traj_length = np.random.randint(10, 100)
-    timestamp = np.arange(traj_length) / sampling_rate
-    sensor = np.random.rand(traj_length, 7)
+    obs_length = np.random.randint(10, 100)
+    timestamp = np.arange(obs_length) / sampling_rate
+    obs = np.random.rand(obs_length, 7)
 
-    sensor_data.append(np.concatenate((timestamp.reshape(-1,1), sensor), axis=1).tolist())
+    obs_data.append(np.concatenate((timestamp.reshape(-1,1), obs), axis=1).tolist())
 
 
 ### Store as Parquet file
 df = pd.DataFrame({
     DatasetKeys.TEXT.value: ["This is a test sentence."] * N,
     # First entry of each list is the timestamp.
-    DatasetKeys.ROBOT_TRAJ.value: traj_data,
-    DatasetKeys.SENSOR_DATA.value: sensor_data,
+    DatasetKeys.ACTIONS.value: act_data,
+    DatasetKeys.OBSERVATIONS.value: obs_data,
 
     # Loading images externally
     DatasetKeys.IMAGE.value: [f"data/imgs/img_{i}.png" for i in range(N)],
 })
 
 table = pa.Table.from_pandas(df)
-pq.write_table(table, "data/data.pq")
+data_path = "data/data.pq"
+pq.write_table(table, data_path)
 
-loaded_table = pq.read_table("data/data.pq")
+loaded_table = pq.read_table(data_path)
 
+print(f"Table created and store as Parquet file: {data_path}")
 
 
