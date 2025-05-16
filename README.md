@@ -20,6 +20,7 @@ Extend Parquet DataLoader from Assignment #2 to be a multimodal data loader with
     - Also does some form of interpolation
     - Define offset for sequence loading, index finds certain video and specific sequence inside of video depending on offset. Offset default 1.
     - Allow end of sequence to sample in a dataset, then pad after it has ended with pad tokens.
+    - Sampling rate fixed for each modality, user defines number of seconds of data to load for each modality, and depending on the modality sampling rate, that much sequence length is loaded.
 
 - Checkpointing: 
     - Keep track of current dataloader index and rng state, load where left off previous batch.
