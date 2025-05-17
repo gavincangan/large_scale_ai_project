@@ -97,14 +97,18 @@ class TimeSeriesParquetDataset(Dataset):
 
         # Load and process image if present
         image = None
+        default_image_shape = (3, 64, 64)  # Change if your images are a different size
         if self.image_col is not None and self.image_col[idx] is not None:
             image_path = self.image_col[idx]
             try:
                 image = Image.open(image_path).convert('RGB')
                 image = T.ToTensor()(image)  # Convert to torch tensor in [0,1] range
             except Exception as e:
-                print(f"Warning: Could not load image at {image_path}: {e}")
-                image = None
+                raise FileNotFoundError(
+                    f"Image file listed in Parquet is missing: '{image_path}' (from dataset index {idx}, file: {self.parquet_file})\nOriginal error: {e}"
+                )
+        else:
+            image = torch.zeros(default_image_shape, dtype=torch.float32)
 
         return {
             DatasetKeys.TEXT.value: text_data,
@@ -115,8 +119,8 @@ class TimeSeriesParquetDataset(Dataset):
 
 
 if __name__ == "__main__":
-    parquet_file = Path("data/data.pq")
-    # parquet_file = Path("data/data_fromh5.pq")
+    # parquet_file = Path("data/data.pq")
+    parquet_file = Path("data/data_fromh5.pq")
     print(f"Loading dataset from {parquet_file.absolute()}")
 
     acts_length_sec = 1.0
