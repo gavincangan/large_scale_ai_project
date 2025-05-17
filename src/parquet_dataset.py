@@ -102,7 +102,8 @@ class TimeSeriesParquetDataset(Dataset):
 
 
 if __name__ == "__main__":
-    parquet_file = Path("data/data_fromh5.pq")
+    parquet_file = Path("data/data.pq")
+    # parquet_file = Path("data/data_fromh5.pq")
     print(f"Loading dataset from {parquet_file.absolute()}")
 
     acts_length_sec = 1.0
@@ -117,3 +118,7 @@ if __name__ == "__main__":
         print(f"\t{batch[DatasetKeys.TEXT.value]}")
         print(f"\t{batch[DatasetKeys.ACTIONS.value].shape}")
         print(f"\t{batch[DatasetKeys.OBSERVATIONS.value].shape}")
+        if batch[DatasetKeys.IMAGE.value] is not None:
+            print(f"\t{batch[DatasetKeys.IMAGE.value]}")
+        else:
+            print("\tNo image data")
