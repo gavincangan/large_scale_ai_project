@@ -6,6 +6,8 @@ from transformers import AutoTokenizer
 import torch
 import bisect
 from utils import DatasetKeys
+from PIL import Image
+import torchvision.transforms as T
 
 
 class TimeSeriesParquetDataset(Dataset):
@@ -93,11 +95,22 @@ class TimeSeriesParquetDataset(Dataset):
         observations_window = torch.tensor(observations_window, dtype=torch.float32)
         # text_data is already a tensor
 
+        # Load and process image if present
+        image = None
+        if self.image_col is not None and self.image_col[idx] is not None:
+            image_path = self.image_col[idx]
+            try:
+                image = Image.open(image_path).convert('RGB')
+                image = T.ToTensor()(image)  # Convert to torch tensor in [0,1] range
+            except Exception as e:
+                print(f"Warning: Could not load image at {image_path}: {e}")
+                image = None
+
         return {
             DatasetKeys.TEXT.value: text_data,
             DatasetKeys.ACTIONS.value: actions_window,
             DatasetKeys.OBSERVATIONS.value: observations_window,
-            DatasetKeys.IMAGE.value: self.image_col[idx] if self.image_col is not None else None,
+            DatasetKeys.IMAGE.value: image,
         }
 
 
@@ -118,7 +131,8 @@ if __name__ == "__main__":
         print(f"\t{batch[DatasetKeys.TEXT.value]}")
         print(f"\t{batch[DatasetKeys.ACTIONS.value].shape}")
         print(f"\t{batch[DatasetKeys.OBSERVATIONS.value].shape}")
-        if batch[DatasetKeys.IMAGE.value] is not None:
-            print(f"\t{batch[DatasetKeys.IMAGE.value]}")
+        image = batch[DatasetKeys.IMAGE.value]
+        if image is not None:
+            print(f"\timage tensor shape: {image.shape}")
         else:
             print("\tNo image data")
