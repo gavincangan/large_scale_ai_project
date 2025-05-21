@@ -6,36 +6,43 @@ from transformers import AutoTokenizer
 import torch
 import bisect
 from utils import DatasetKeys
-from PIL import Image
-import torchvision.transforms as T
+import pickle
+import os
 
 
 class TimeSeriesParquetDataset(Dataset):
     def __init__(
         self,
         parquet_file: Path,
-        acts_length_sec: float = 1.0,
-        obs_length_sec: float = 1.0,
+        acts_length_sec: float,
+        obs_length_sec: float,
+        sample_rate: float = 1.0,
         device=None,
-        window_mode: str = 'start',  # 'start' or 'random'
+        checkpoint_path: str = None,  # Path to save/load checkpoint
     ):
         super().__init__()
 
         self.parquet_file = parquet_file
         self._ds = pq.read_table(parquet_file, memory_map=True)
 
-        self.acts_length_sec = acts_length_sec
-        self.obs_length_sec = obs_length_sec
-        self.window_mode = window_mode
+        self.text_col = self._ds[DatasetKeys.TEXT.value]
+        self.acts_col = self._ds[DatasetKeys.ACTIONS.value]
+        self.sensor_col = self._ds[DatasetKeys.OBSERVATIONS.value]
+        self._init_sanity_check_function()
 
-        # Each column is a list of episodes
-        self.text_col = self._ds[DatasetKeys.TEXT.value].to_pylist()
-        self.actions_col = self._ds[DatasetKeys.ACTIONS.value].to_pylist()
-        self.observations_col = self._ds[DatasetKeys.OBSERVATIONS.value].to_pylist()
-        self.image_col = self._ds[DatasetKeys.IMAGE.value].to_pylist() if DatasetKeys.IMAGE.value in self._ds.column_names else None
+        self._init_cumulative_indices()
 
         self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
-        self.text_col = self.tokenizer(self.text_col, padding=True, truncation=True, return_tensors="pt")
+        self.text_col = self.tokenizer(
+            self.text_col, padding=True, truncation=True, return_tensors="pt"
+        )
+
+        self.acts_length_sec = acts_length_sec
+        self.obs_length_sec = obs_length_sec
+
+        self.checkpoint_path = checkpoint_path
+        self._dataloader_index = 0
+        self._rng_state = None
 
         if device is None:
             if torch.cuda.is_available():
@@ -45,98 +52,190 @@ class TimeSeriesParquetDataset(Dataset):
             else:
                 self.device = torch.device("cpu")
 
+        if checkpoint_path is not None and os.path.exists(checkpoint_path):
+            self.load_checkpoint(checkpoint_path)
+
+    def _init_sanity_check_function(self):
+        # Assuming each acts has the shape (N, D+1)
+        # and each sensor_input has the shape (N, S+1)
+        # where N is the number of time steps, D is the robot trajectory dimension,
+        # and S is the sensor input dimension. We add a +1 to account for the time step dimension.
+        self.robot_dof = len(self.robot_acts_col[0][0])
+        self.sensor_dim = len(self.sensor_col[0][0])
+
+        self.acts_time_steps = len(self.acts_col[0])
+        self.acts_freq = np.median(1.0 / np.diff(np.array(self.acts_time_steps[:, 0])))
+        self.acts_seq_length = int(self.acts_length_sec * self.acts_freq)
+
+        self.sensor_time_steps = len(self.sensor_col[0])
+        self.sensor_freq = np.median(
+            1.0 / np.diff(np.array(self.sensor_time_steps[:, 0]))
+        )
+        self.sensor_seq_length = int(self.obs_length_sec * self.sensor_freq)
+
+        def sanity_check_function(acts, obs):
+            # Check if the robot trajectory and sensor data have the same number of time steps
+            for i, obs in enumerate(obs):
+                if len(obs) != self.sensor_dim:
+                    raise ValueError(
+                        f"Sensor data at index {i} has dimension {len(obs)} but expected {self.sensor_dim}."
+                    )
+
+            for i, robot_state in enumerate(acts):
+                if len(robot_state) != self.robot_dof:
+                    raise ValueError(
+                        f"Robot trajectory at index {i} has dimension {len(acts)} but expected {self.robot_dof}."
+                    )
+            return True
+
+        self.sanity_check_function = sanity_check_function
+
+    def _init_cumulative_indices(self):
+        # Robot trajs
+        self._acts_cumulative_indices = [0]
+        self._acts_episode_lengths = []
+        for i in range(len(self.acts_col)):
+            self._acts_cumulative_indices.append(
+                self._acts_cumulative_indices[-1] + len(self.acts_col[i])
+            )
+            self._acts_episode_lengths.append(len(self.acts_col[i]))
+
+        # Sensor data
+        self._obs_cumulative_indices = [0]
+        self._obs_episode_lengths = []
+        for i in range(len(self.sensor_col)):
+            self._obs_cumulative_indices.append(
+                self._obs_cumulative_indices[-1] + len(self.sensor_col[i])
+            )
+            self._obs_episode_lengths.append(len(self.sensor_col[i]))
+
+    def _locate(self, global_idx: int):
+        # Find the episode index for the robot trajectory
+        acts_episode_idx = (
+            bisect.bisect_left(self._acts_cumulative_indices, global_idx) - 1
+        )
+        acts_start_idx = self._acts_cumulative_indices[acts_episode_idx]
+        acts_local_idx = global_idx - acts_start_idx
+
+        # Find the episode index for the sensor data
+        obs_episode_idx = (
+            bisect.bisect_left(self._obs_cumulative_indices, global_idx) - 1
+        )
+        obs_start_idx = self._obs_cumulative_indices[obs_episode_idx]
+        obs_local_idx = global_idx - obs_start_idx
+
+        return acts_episode_idx, acts_local_idx, obs_episode_idx, obs_local_idx
+
     def __len__(self):
-        return len(self.actions_col)
+        return 0
 
     def __getitem__(self, idx: int):
-        # Get episode data
-        actions = np.array(self.actions_col[idx], dtype=np.float32)
-        observations = np.array(self.observations_col[idx], dtype=np.float32)
-        text_data = self.text_col['input_ids'][idx]
+        # Get the global index
+        global_idx = idx - 1
 
-        # --- Actions window ---
-        actions_timestamps = actions[:, 0]
-        actions_diffs = np.diff(actions_timestamps)
-        actions_diffs = actions_diffs[actions_diffs > 0]
-        if len(actions_diffs) > 0:
-            actions_freq = np.median(1.0 / actions_diffs)
-        else:
-            actions_freq = 1.0
-        actions_seq_length = int(self.acts_length_sec * actions_freq)
-        if self.window_mode == 'random' and len(actions) > actions_seq_length:
-            start = np.random.randint(0, len(actions) - actions_seq_length + 1)
-        else:
-            start = 0
-        end = start + actions_seq_length
-        actions_window = actions[start:end]
-        if len(actions_window) < actions_seq_length:
-            actions_window = np.pad(actions_window, ((0, actions_seq_length - len(actions_window)), (0, 0)), mode='constant', constant_values=0)
+        # Locate the episode and local index for both robot trajectory and sensor data
+        acts_episode_idx, acts_local_idx, obs_episode_idx, obs_local_idx = self._locate(
+            global_idx
+        )
 
-        # --- Observations window ---
-        observations_timestamps = observations[:, 0]
-        observations_diffs = np.diff(observations_timestamps)
-        observations_diffs = observations_diffs[observations_diffs > 0]
-        if len(observations_diffs) > 0:
-            observations_freq = np.median(1.0 / observations_diffs)
-        else:
-            observations_freq = 1.0
-        observations_seq_length = int(self.obs_length_sec * observations_freq)
-        if self.window_mode == 'random' and len(observations) > observations_seq_length:
-            start_obs = np.random.randint(0, len(observations) - observations_seq_length + 1)
-        else:
-            start_obs = 0
-        end_obs = start_obs + observations_seq_length
-        observations_window = observations[start_obs:end_obs]
-        if len(observations_window) < observations_seq_length:
-            observations_window = np.pad(observations_window, ((0, observations_seq_length - len(observations_window)), (0, 0)), mode='constant', constant_values=0)
+        # Get the robot trajectory and sensor data
+        acts_end_idx = acts_local_idx + int(self.acts_length_sec * self.acts_freq)
+        acts = self.acts_col[acts_episode_idx][acts_local_idx:acts_end_idx]
 
-        # Convert to tensors
-        actions_window = torch.tensor(actions_window, dtype=torch.float32)
-        observations_window = torch.tensor(observations_window, dtype=torch.float32)
-        # text_data is already a tensor
+        obs_end_idx = obs_local_idx + int(self.obs_length_sec * self.sensor_freq)
+        obs = self.sensor_col[obs_episode_idx][obs_local_idx:obs_end_idx]
 
-        # Load and process image if present
-        image = None
-        default_image_shape = (3, 64, 64)  # Change if your images are a different size
-        if self.image_col is not None and self.image_col[idx] is not None:
-            image_path = self.image_col[idx]
-            try:
-                image = Image.open(image_path).convert('RGB')
-                image = T.ToTensor()(image)  # Convert to torch tensor in [0,1] range
-            except Exception as e:
-                raise FileNotFoundError(
-                    f"Image file listed in Parquet is missing: '{image_path}' (from dataset index {idx}, file: {self.parquet_file})\nOriginal error: {e}"
-                )
+        # Sanity check
+        self.sanity_check_function(acts, obs)
+
+        # Padding
+        if len(acts) < self.acts_seq_length:
+            acts = np.pad(
+                acts,
+                ((0, self.acts_seq_length - len(acts)), (0, 0)),
+                mode="constant",
+                constant_values=0,
+            )
         else:
-            image = torch.zeros(default_image_shape, dtype=torch.float32)
+            acts = acts[: self.acts_seq_length]
+
+        if len(obs) < self.sensor_seq_length:
+            obs = np.pad(
+                obs,
+                ((0, self.sensor_seq_length - len(obs)), (0, 0)),
+                mode="constant",
+                constant_values=0,
+            )
+        else:
+            obs = obs[: self.sensor_seq_length]
+
+        assert (
+            len(acts) == self.acts_seq_length
+        ), f"Robot trajectory length mismatch: {len(acts)} != {self.acts_seq_length}"
+        assert (
+            len(obs) == self.sensor_seq_length
+        ), f"Sensor data length mismatch: {len(obs)} != {self.sensor_seq_length}"
+
+        # Get the text data
+        text_data = self.text_col[global_idx]
+
+        # Convert everything to tensors
+        acts = torch.tensor(acts, dtype=torch.float32)
+        obs = torch.tensor(obs, dtype=torch.float32)
+        text_data = torch.tensor(text_data, dtype=torch.long)
 
         return {
-            DatasetKeys.TEXT.value: text_data,
-            DatasetKeys.ACTIONS.value: actions_window,
-            DatasetKeys.OBSERVATIONS.value: observations_window,
-            DatasetKeys.IMAGE.value: image,
+            DatasetKeys.TEXT.value: self.text_col[global_idx],
+            DatasetKeys.ACTIONS.value: acts,
+            DatasetKeys.OBSERVATIONS.value: obs,
         }
+
+    def save_checkpoint(self, checkpoint_path=None, dataloader_index=None):
+        """Save dataloader index and RNG state to checkpoint_path."""
+        if checkpoint_path is None:
+            checkpoint_path = self.checkpoint_path
+        if dataloader_index is None:
+            dataloader_index = self._dataloader_index
+        state = {
+            "dataloader_index": dataloader_index,
+            "rng_state": np.random.get_state(),
+            "torch_rng_state": torch.get_rng_state().cpu().numpy().tolist(),
+        }
+        with open(checkpoint_path, "wb") as f:
+            pickle.dump(state, f)
+
+    def load_checkpoint(self, checkpoint_path=None):
+        """Restore dataloader index and RNG state from checkpoint_path."""
+        if checkpoint_path is None:
+            checkpoint_path = self.checkpoint_path
+        with open(checkpoint_path, "rb") as f:
+            state = pickle.load(f)
+        self._dataloader_index = state["dataloader_index"]
+        np.random.set_state(state["rng_state"])
+        torch.set_rng_state(torch.tensor(state["torch_rng_state"], dtype=torch.uint8))
+
+    def set_dataloader_index(self, idx):
+        self._dataloader_index = idx
+
+    def get_dataloader_index(self):
+        return self._dataloader_index
 
 
 if __name__ == "__main__":
-    # parquet_file = Path("data/data.pq")
+    # Example usage for checkpointing
     parquet_file = Path("data/data_fromh5.pq")
-    print(f"Loading dataset from {parquet_file.absolute()}")
-
     acts_length_sec = 1.0
     obs_length_sec = 1.0
 
-    dataset = TimeSeriesParquetDataset(parquet_file, acts_length_sec, obs_length_sec)
+    checkpoint_path = "data/dataloader_ckpt.pkl"
 
+    dataset = TimeSeriesParquetDataset(
+        parquet_file, acts_length_sec, obs_length_sec, checkpoint_path=checkpoint_path
+    )
     dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
-
     for idx, batch in enumerate(dataloader):
-        print(f"Batch {idx}:")
-        print(f"\t{batch[DatasetKeys.TEXT.value]}")
-        print(f"\t{batch[DatasetKeys.ACTIONS.value].shape}")
-        print(f"\t{batch[DatasetKeys.OBSERVATIONS.value].shape}")
-        image = batch[DatasetKeys.IMAGE.value]
-        if image is not None:
-            print(f"\timage tensor shape: {image.shape}")
-        else:
-            print("\tNo image data")
+        dataset.set_dataloader_index(idx)
+        # ...existing code for batch processing...
+        # Optionally save checkpoint every N batches
+        if idx % 10 == 0:
+            dataset.save_checkpoint()
