@@ -63,14 +63,12 @@ class TimeSeriesParquetDataset(Dataset):
         self.robot_dof = len(self.acts_col[0][0])
         self.obs_dim = len(self.obs_col[0][0])
 
-        self.acts_time_steps = len(self.acts_col[0])
-        self.acts_freq = np.median(1.0 / np.diff(np.array(self.acts_time_steps[:, 0])))
+        self.acts_time_steps = np.array(self.acts_col[0])[:, 0]
+        self.acts_freq = np.median(1.0 / np.diff(self.acts_time_steps)) if len(self.acts_time_steps) > 1 else 1.0
         self.acts_seq_length = int(self.acts_length_sec * self.acts_freq)
 
-        self.obs_time_steps = len(self.obs_col[0])
-        self.obs_freq = np.median(
-            1.0 / np.diff(np.array(self.obs_time_steps[:, 0]))
-        )
+        self.obs_time_steps = np.array(self.obs_col[0])[:, 0]
+        self.obs_freq = np.median(1.0 / np.diff(self.obs_time_steps)) if len(self.obs_time_steps) > 1 else 1.0
         self.obs_seq_length = int(self.obs_length_sec * self.obs_freq)
 
         def sanity_check_function(acts, obs):
