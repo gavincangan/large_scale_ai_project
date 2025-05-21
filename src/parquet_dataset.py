@@ -27,7 +27,7 @@ class TimeSeriesParquetDataset(Dataset):
         self.obs_length_sec = obs_length_sec
         self._ds = pq.read_table(parquet_file, memory_map=True)
 
-        self.text_col = self._ds[DatasetKeys.TEXT.value]
+        self.text_col = self._ds[DatasetKeys.TEXT.value].to_pylist()
         self.acts_col = self._ds[DatasetKeys.ACTIONS.value]
         self.obs_col = self._ds[DatasetKeys.OBSERVATIONS.value]
         self._init_sanity_check_function()
