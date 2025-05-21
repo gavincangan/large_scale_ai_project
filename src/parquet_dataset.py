@@ -258,12 +258,10 @@ if __name__ == "__main__":
         parquet_file, acts_length_sec, obs_length_sec, checkpoint_path=checkpoint_path
     )
     dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
-    for idx, batch in enumerate(dataloader):
+    start_idx = dataset.get_dataloader_index() if dataset.get_dataloader_index() else 0
+    for idx, batch in enumerate(dataloader, start=start_idx):
         dataset.set_dataloader_index(idx)
-        
         # do something here with the batch
         print(f"Batch {idx}: {batch}")
-        
         # save checkpoint every N batches
-        # if idx % 10 == 0:
         dataset.save_checkpoint()
