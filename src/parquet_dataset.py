@@ -27,7 +27,7 @@ class TimeSeriesParquetDataset(Dataset):
 
         self.text_col = self._ds[DatasetKeys.TEXT.value]
         self.acts_col = self._ds[DatasetKeys.ACTIONS.value]
-        self.sensor_col = self._ds[DatasetKeys.OBSERVATIONS.value]
+        self.obs_col = self._ds[DatasetKeys.OBSERVATIONS.value]
         self._init_sanity_check_function()
 
         self._init_cumulative_indices()
@@ -57,28 +57,28 @@ class TimeSeriesParquetDataset(Dataset):
 
     def _init_sanity_check_function(self):
         # Assuming each acts has the shape (N, D+1)
-        # and each sensor_input has the shape (N, S+1)
+        # and each obs_input has the shape (N, S+1)
         # where N is the number of time steps, D is the robot trajectory dimension,
-        # and S is the sensor input dimension. We add a +1 to account for the time step dimension.
-        self.robot_dof = len(self.robot_acts_col[0][0])
-        self.sensor_dim = len(self.sensor_col[0][0])
+        # and S is the obs input dimension. We add a +1 to account for the time step dimension.
+        self.robot_dof = len(self.acts_col[0][0])
+        self.obs_dim = len(self.obs_col[0][0])
 
         self.acts_time_steps = len(self.acts_col[0])
         self.acts_freq = np.median(1.0 / np.diff(np.array(self.acts_time_steps[:, 0])))
         self.acts_seq_length = int(self.acts_length_sec * self.acts_freq)
 
-        self.sensor_time_steps = len(self.sensor_col[0])
-        self.sensor_freq = np.median(
-            1.0 / np.diff(np.array(self.sensor_time_steps[:, 0]))
+        self.obs_time_steps = len(self.obs_col[0])
+        self.obs_freq = np.median(
+            1.0 / np.diff(np.array(self.obs_time_steps[:, 0]))
         )
-        self.sensor_seq_length = int(self.obs_length_sec * self.sensor_freq)
+        self.obs_seq_length = int(self.obs_length_sec * self.obs_freq)
 
         def sanity_check_function(acts, obs):
-            # Check if the robot trajectory and sensor data have the same number of time steps
+            # Check if the robot trajectory and obs data have the same number of time steps
             for i, obs in enumerate(obs):
-                if len(obs) != self.sensor_dim:
+                if len(obs) != self.obs_dim:
                     raise ValueError(
-                        f"Sensor data at index {i} has dimension {len(obs)} but expected {self.sensor_dim}."
+                        f"Observation data at index {i} has dimension {len(obs)} but expected {self.obs_dim}."
                     )
 
             for i, robot_state in enumerate(acts):
@@ -100,14 +100,14 @@ class TimeSeriesParquetDataset(Dataset):
             )
             self._acts_episode_lengths.append(len(self.acts_col[i]))
 
-        # Sensor data
+        # Observation data
         self._obs_cumulative_indices = [0]
         self._obs_episode_lengths = []
-        for i in range(len(self.sensor_col)):
+        for i in range(len(self.obs_col)):
             self._obs_cumulative_indices.append(
-                self._obs_cumulative_indices[-1] + len(self.sensor_col[i])
+                self._obs_cumulative_indices[-1] + len(self.obs_col[i])
             )
-            self._obs_episode_lengths.append(len(self.sensor_col[i]))
+            self._obs_episode_lengths.append(len(self.obs_col[i]))
 
     def _locate(self, global_idx: int):
         # Find the episode index for the robot trajectory
@@ -117,7 +117,7 @@ class TimeSeriesParquetDataset(Dataset):
         acts_start_idx = self._acts_cumulative_indices[acts_episode_idx]
         acts_local_idx = global_idx - acts_start_idx
 
-        # Find the episode index for the sensor data
+        # Find the episode index for the observation data
         obs_episode_idx = (
             bisect.bisect_left(self._obs_cumulative_indices, global_idx) - 1
         )
@@ -133,17 +133,17 @@ class TimeSeriesParquetDataset(Dataset):
         # Get the global index
         global_idx = idx - 1
 
-        # Locate the episode and local index for both robot trajectory and sensor data
+        # Locate the episode and local index for both robot trajectory and observation data
         acts_episode_idx, acts_local_idx, obs_episode_idx, obs_local_idx = self._locate(
             global_idx
         )
 
-        # Get the robot trajectory and sensor data
+        # Get the robot trajectory and observation data
         acts_end_idx = acts_local_idx + int(self.acts_length_sec * self.acts_freq)
         acts = self.acts_col[acts_episode_idx][acts_local_idx:acts_end_idx]
 
-        obs_end_idx = obs_local_idx + int(self.obs_length_sec * self.sensor_freq)
-        obs = self.sensor_col[obs_episode_idx][obs_local_idx:obs_end_idx]
+        obs_end_idx = obs_local_idx + int(self.obs_length_sec * self.obs_freq)
+        obs = self.obs_col[obs_episode_idx][obs_local_idx:obs_end_idx]
 
         # Sanity check
         self.sanity_check_function(acts, obs)
@@ -159,22 +159,22 @@ class TimeSeriesParquetDataset(Dataset):
         else:
             acts = acts[: self.acts_seq_length]
 
-        if len(obs) < self.sensor_seq_length:
+        if len(obs) < self.obs_seq_length:
             obs = np.pad(
                 obs,
-                ((0, self.sensor_seq_length - len(obs)), (0, 0)),
+                ((0, self.obs_seq_length - len(obs)), (0, 0)),
                 mode="constant",
                 constant_values=0,
             )
         else:
-            obs = obs[: self.sensor_seq_length]
+            obs = obs[: self.obs_seq_length]
 
         assert (
             len(acts) == self.acts_seq_length
         ), f"Robot trajectory length mismatch: {len(acts)} != {self.acts_seq_length}"
         assert (
-            len(obs) == self.sensor_seq_length
-        ), f"Sensor data length mismatch: {len(obs)} != {self.sensor_seq_length}"
+            len(obs) == self.obs_seq_length
+        ), f"Observation data length mismatch: {len(obs)} != {self.obs_seq_length}"
 
         # Get the text data
         text_data = self.text_col[global_idx]
