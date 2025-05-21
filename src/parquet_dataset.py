@@ -23,6 +23,8 @@ class TimeSeriesParquetDataset(Dataset):
         super().__init__()
 
         self.parquet_file = parquet_file
+        self.acts_length_sec = acts_length_sec
+        self.obs_length_sec = obs_length_sec
         self._ds = pq.read_table(parquet_file, memory_map=True)
 
         self.text_col = self._ds[DatasetKeys.TEXT.value]
@@ -36,9 +38,6 @@ class TimeSeriesParquetDataset(Dataset):
         self.text_col = self.tokenizer(
             self.text_col, padding=True, truncation=True, return_tensors="pt"
         )
-
-        self.acts_length_sec = acts_length_sec
-        self.obs_length_sec = obs_length_sec
 
         self.checkpoint_path = checkpoint_path
         self._dataloader_index = 0
