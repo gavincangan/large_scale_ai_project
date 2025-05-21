@@ -259,7 +259,14 @@ if __name__ == "__main__":
     )
     dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
     start_idx = dataset.get_dataloader_index() if dataset.get_dataloader_index() else 0
-    for idx, batch in enumerate(dataloader, start=start_idx):
+    # Actually skip already-processed batches by advancing the iterator
+    dataloader_iter = iter(dataloader)
+    for _ in range(start_idx):
+        try:
+            next(dataloader_iter)
+        except StopIteration:
+            break
+    for idx, batch in enumerate(dataloader_iter, start=start_idx):
         dataset.set_dataloader_index(idx)
         # do something here with the batch
         print(f"Batch {idx}: {batch}")
