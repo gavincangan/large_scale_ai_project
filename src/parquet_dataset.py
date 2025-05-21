@@ -135,7 +135,8 @@ class TimeSeriesParquetDataset(Dataset):
         return acts_episode_idx, acts_local_idx, obs_episode_idx, obs_local_idx
 
     def __len__(self):
-        return 0
+        # Return the total number of possible windows (episodes) in the dataset
+        return len(self.acts_col)
 
     def __getitem__(self, idx: int):
         # Get the global index
