@@ -143,27 +143,35 @@ class TimeSeriesParquetDataset(Dataset):
         global_idx = idx - 1
 
         # Locate the episode and local index for both robot trajectory and observation data
-        acts_episode_idx, acts_local_idx, obs_episode_idx, obs_local_idx = self._locate(
-            global_idx
-        )
+        acts_episode_idx, acts_local_idx, obs_episode_idx, obs_local_idx = self._locate(global_idx)
 
-        # Get the robot trajectory and observation data
-        acts_end_idx = acts_local_idx + int(self.acts_length_sec * self.acts_freq)
-        acts_episode = self.acts_col[acts_episode_idx][acts_local_idx:acts_end_idx]
-        if hasattr(acts_episode, 'to_pylist'):
+        # Convert pyarrow ListScalar to python list for slicing (ALWAYS convert, not just if hasattr)
+        acts_episode = self.acts_col[acts_episode_idx]
+        try:
             acts_episode = acts_episode.to_pylist()
+        except AttributeError:
+            acts_episode = list(acts_episode)
+        acts_end_idx = acts_local_idx + int(self.acts_length_sec * self.acts_freq)
         acts = acts_episode[acts_local_idx:acts_end_idx]
 
-        obs_end_idx = obs_local_idx + int(self.obs_length_sec * self.obs_freq)
-        obs_episode = self.obs_col[obs_episode_idx][obs_local_idx:obs_end_idx]
-        if hasattr(obs_episode, 'to_pylist'):
+        obs_episode = self.obs_col[obs_episode_idx]
+        try:
             obs_episode = obs_episode.to_pylist()
+        except AttributeError:
+            obs_episode = list(obs_episode)
+        obs_end_idx = obs_local_idx + int(self.obs_length_sec * self.obs_freq)
         obs = obs_episode[obs_local_idx:obs_end_idx]
 
         # Sanity check
         self.sanity_check_function(acts, obs)
 
         # Padding
+        acts = np.array(acts, dtype=np.float32)
+        obs = np.array(obs, dtype=np.float32)
+        if acts.ndim == 1:
+            acts = acts[None, :]
+        if obs.ndim == 1:
+            obs = obs[None, :]
         if len(acts) < self.acts_seq_length:
             acts = np.pad(
                 acts,
@@ -192,15 +200,15 @@ class TimeSeriesParquetDataset(Dataset):
         ), f"Observation data length mismatch: {len(obs)} != {self.obs_seq_length}"
 
         # Get the text data
-        text_data = self.text_col[global_idx]
+        text_data = {k: v[global_idx] for k, v in self.text_col.items()}
 
         # Convert everything to tensors
         acts = torch.tensor(acts, dtype=torch.float32)
         obs = torch.tensor(obs, dtype=torch.float32)
-        text_data = torch.tensor(text_data, dtype=torch.long)
+        # text_data is already a tensor or dict of tensors
 
         return {
-            DatasetKeys.TEXT.value: self.text_col[global_idx],
+            DatasetKeys.TEXT.value: text_data,
             DatasetKeys.ACTIONS.value: acts,
             DatasetKeys.OBSERVATIONS.value: obs,
         }
