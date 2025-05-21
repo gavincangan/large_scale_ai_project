@@ -226,11 +226,13 @@ class TimeSeriesParquetDataset(Dataset):
         }
         with open(checkpoint_path, "wb") as f:
             pickle.dump(state, f)
+        print(f"Checkpoint saved to {checkpoint_path}")
 
     def load_checkpoint(self, checkpoint_path=None):
         """Restore dataloader index and RNG state from checkpoint_path."""
         if checkpoint_path is None:
             checkpoint_path = self.checkpoint_path
+        print(f"Loading checkpoint from {checkpoint_path}")
         with open(checkpoint_path, "rb") as f:
             state = pickle.load(f)
         self._dataloader_index = state["dataloader_index"]
@@ -247,8 +249,8 @@ class TimeSeriesParquetDataset(Dataset):
 if __name__ == "__main__":
     # Example usage for checkpointing
     parquet_file = Path("data/data_fromh5.pq")
-    acts_length_sec = 1.0
-    obs_length_sec = 1.0
+    acts_length_sec = 0.1
+    obs_length_sec = 0.1
 
     checkpoint_path = "data/dataloader_ckpt.pkl"
 
@@ -263,5 +265,5 @@ if __name__ == "__main__":
         print(f"Batch {idx}: {batch}")
         
         # save checkpoint every N batches
-        if idx % 10 == 0:
-            dataset.save_checkpoint()
+        # if idx % 10 == 0:
+        dataset.save_checkpoint()
