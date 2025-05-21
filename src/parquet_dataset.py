@@ -149,10 +149,16 @@ class TimeSeriesParquetDataset(Dataset):
 
         # Get the robot trajectory and observation data
         acts_end_idx = acts_local_idx + int(self.acts_length_sec * self.acts_freq)
-        acts = self.acts_col[acts_episode_idx][acts_local_idx:acts_end_idx]
+        acts_episode = self.acts_col[acts_episode_idx][acts_local_idx:acts_end_idx]
+        if hasattr(acts_episode, 'to_pylist'):
+            acts_episode = acts_episode.to_pylist()
+        acts = acts_episode[acts_local_idx:acts_end_idx]
 
         obs_end_idx = obs_local_idx + int(self.obs_length_sec * self.obs_freq)
-        obs = self.obs_col[obs_episode_idx][obs_local_idx:obs_end_idx]
+        obs_episode = self.obs_col[obs_episode_idx][obs_local_idx:obs_end_idx]
+        if hasattr(obs_episode, 'to_pylist'):
+            obs_episode = obs_episode.to_pylist()
+        obs = obs_episode[obs_local_idx:obs_end_idx]
 
         # Sanity check
         self.sanity_check_function(acts, obs)
