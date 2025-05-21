@@ -1,5 +1,6 @@
 from enum import Enum
 
+
 class DatasetKeys(Enum):
     TEXT = "text"
     IMAGE = "image"
@@ -7,4 +8,3 @@ class DatasetKeys(Enum):
     VIDEO = "video"
     ACTIONS = "actions"
     OBSERVATIONS = "observations"
-
