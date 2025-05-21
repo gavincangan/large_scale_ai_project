@@ -235,7 +235,10 @@ if __name__ == "__main__":
     dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
     for idx, batch in enumerate(dataloader):
         dataset.set_dataloader_index(idx)
-        # ...existing code for batch processing...
-        # Optionally save checkpoint every N batches
+        
+        # do something here with the batch
+        print(f"Batch {idx}: {batch}")
+        
+        # save checkpoint every N batches
         if idx % 10 == 0:
             dataset.save_checkpoint()
