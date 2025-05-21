@@ -64,11 +64,21 @@ class TimeSeriesParquetDataset(Dataset):
 
         # Convert pyarrow scalars to numpy float arrays for timestamp columns
         self.acts_time_steps = np.array([float(x[0].as_py() if hasattr(x[0], 'as_py') else x[0]) for x in self.acts_col[0]])
-        self.acts_freq = np.median(1.0 / np.diff(self.acts_time_steps)) if len(self.acts_time_steps) > 1 else 1.0
+        acts_diffs = np.diff(self.acts_time_steps)
+        acts_diffs = acts_diffs[acts_diffs > 0]
+        if len(acts_diffs) > 0:
+            self.acts_freq = np.median(1.0 / acts_diffs)
+        else:
+            self.acts_freq = 1.0
         self.acts_seq_length = int(self.acts_length_sec * self.acts_freq)
 
         self.obs_time_steps = np.array([float(x[0].as_py() if hasattr(x[0], 'as_py') else x[0]) for x in self.obs_col[0]])
-        self.obs_freq = np.median(1.0 / np.diff(self.obs_time_steps)) if len(self.obs_time_steps) > 1 else 1.0
+        obs_diffs = np.diff(self.obs_time_steps)
+        obs_diffs = obs_diffs[obs_diffs > 0]
+        if len(obs_diffs) > 0:
+            self.obs_freq = np.median(1.0 / obs_diffs)
+        else:
+            self.obs_freq = 1.0
         self.obs_seq_length = int(self.obs_length_sec * self.obs_freq)
 
         def sanity_check_function(acts, obs):
