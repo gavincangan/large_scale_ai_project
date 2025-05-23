@@ -1,14 +1,14 @@
 import numpy as np
 import pyarrow.parquet as pq
 from pathlib import Path
-from torch.utils.data import Dataset, DataLoader, IterableDataset
+from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer
 import torch
 import bisect
+import cv2  # OpenCV for video processing
 from utils import DatasetKeys
 import pickle
 import os
-
 
 class TimeSeriesParquetDataset(Dataset):
     def __init__(
@@ -17,19 +17,33 @@ class TimeSeriesParquetDataset(Dataset):
         acts_length_sec: float,
         obs_length_sec: float,
         sample_rate: float = 1.0,
+        video_frame_offsets=None,  # List of relative frame offsets to extract
         device=None,
         checkpoint_path: str = None,  # Path to save/load checkpoint
     ):
+        """
+        Args:
+            parquet_file: Path to the parquet file.
+            acts_length_sec: Length of actions window in seconds.
+            obs_length_sec: Length of observations window in seconds.
+            sample_rate: Not used, kept for compatibility.
+            video_frame_offsets: List of relative frame offsets to extract (e.g., [-1, 0, 1]).
+                                 If None, defaults to [0] (current frame only).
+            device: Torch device.
+            checkpoint_path: Path to save/load checkpoint.
+        """
         super().__init__()
 
         self.parquet_file = parquet_file
         self.acts_length_sec = acts_length_sec
         self.obs_length_sec = obs_length_sec
+        self.video_frame_offsets = video_frame_offsets if video_frame_offsets is not None else [0]
         self._ds = pq.read_table(parquet_file, memory_map=True)
 
         self.text_col = self._ds[DatasetKeys.TEXT.value].to_pylist()
         self.acts_col = self._ds[DatasetKeys.ACTIONS.value]
         self.obs_col = self._ds[DatasetKeys.OBSERVATIONS.value]
+        self.video_col = self._ds[DatasetKeys.VIDEO.value]  # Load video data
         self._init_sanity_check_function()
 
         self._init_cumulative_indices()
@@ -202,6 +216,31 @@ class TimeSeriesParquetDataset(Dataset):
         # Get the text data
         text_data = {k: v[global_idx] for k, v in self.text_col.items()}
 
+        # Handle video data: extract frames at user-specified offsets
+        video_path = self.video_col[global_idx]
+        cap = cv2.VideoCapture(video_path)
+        # Use the timestamp of the first action as the reference
+        timestamp = acts[0, 0] if acts.shape[0] > 0 else 0.0
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        # Calculate the frame index corresponding to the timestamp
+        frame_idx = int(round(timestamp * fps))
+        frames = []
+        for offset in self.video_frame_offsets:
+            idx = frame_idx + offset
+            if 0 <= idx < total_frames:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, frame = cap.read()
+                if ret:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frame_tensor = torch.tensor(frame, dtype=torch.float32).permute(2, 0, 1)  # CxHxW
+                    frames.append(frame_tensor)
+        cap.release()
+        if frames:
+            video_tensor = torch.stack(frames, dim=0)  # (num_frames, C, H, W)
+        else:
+            video_tensor = None
+
         # Convert everything to tensors
         acts = torch.tensor(acts, dtype=torch.float32)
         obs = torch.tensor(obs, dtype=torch.float32)
@@ -211,6 +250,7 @@ class TimeSeriesParquetDataset(Dataset):
             DatasetKeys.TEXT.value: text_data,
             DatasetKeys.ACTIONS.value: acts,
             DatasetKeys.OBSERVATIONS.value: obs,
+            DatasetKeys.VIDEO.value: video_tensor,  # Stacked/concatenated frames
         }
 
     def save_checkpoint(self, checkpoint_path=None, dataloader_index=None):
@@ -247,7 +287,6 @@ class TimeSeriesParquetDataset(Dataset):
 
 
 if __name__ == "__main__":
-    # Example usage for checkpointing
     parquet_file = Path("data/data_fromh5.pq")
     acts_length_sec = 0.1
     obs_length_sec = 0.1
