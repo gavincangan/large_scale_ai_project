@@ -132,17 +132,12 @@ class TimeSeriesParquetDataset(Dataset):
             self._obs_episode_lengths.append(len(self.obs_col[i]))
 
     def _locate(self, global_idx: int):
-        # Find the episode index for the robot trajectory
-        acts_episode_idx = (
-            bisect.bisect_left(self._acts_cumulative_indices, global_idx) - 1
-        )
+        # Use bisect_right to avoid special case for global_idx == 0
+        acts_episode_idx = bisect.bisect_right(self._acts_cumulative_indices, global_idx) - 1
         acts_start_idx = self._acts_cumulative_indices[acts_episode_idx]
         acts_local_idx = global_idx - acts_start_idx
 
-        # Find the episode index for the observation data
-        obs_episode_idx = (
-            bisect.bisect_left(self._obs_cumulative_indices, global_idx) - 1
-        )
+        obs_episode_idx = bisect.bisect_right(self._obs_cumulative_indices, global_idx) - 1
         obs_start_idx = self._obs_cumulative_indices[obs_episode_idx]
         obs_local_idx = global_idx - obs_start_idx
 
@@ -154,7 +149,7 @@ class TimeSeriesParquetDataset(Dataset):
 
     def __getitem__(self, idx: int):
         # Get the global index
-        global_idx = idx - 1
+        global_idx = idx
 
         # Locate the episode and local index for both robot trajectory and observation data
         acts_episode_idx, acts_local_idx, obs_episode_idx, obs_local_idx = self._locate(global_idx)
@@ -166,7 +161,17 @@ class TimeSeriesParquetDataset(Dataset):
         except AttributeError:
             acts_episode = list(acts_episode)
         acts_end_idx = acts_local_idx + int(self.acts_length_sec * self.acts_freq)
+        print(f"[DEBUG] idx={idx}, global_idx={global_idx}, acts_episode_idx={acts_episode_idx}, acts_local_idx={acts_local_idx}, acts_end_idx={acts_end_idx}, acts_episode_len={len(acts_episode)}")
         acts = acts_episode[acts_local_idx:acts_end_idx]
+        print(f"[DEBUG] acts slice: acts_local_idx={acts_local_idx}, acts_end_idx={acts_end_idx}, acts={acts}")
+        # Convert any pyarrow scalars to float
+        acts = [[float(x.as_py() if hasattr(x, 'as_py') else x) for x in row] for row in acts]
+        # Check for empty or malformed actions
+        if len(acts) == 0 or (len(acts) > 0 and (not isinstance(acts[0], list) or len(acts[0]) != self.robot_dof)):
+            raise ValueError(
+                f"Malformed or empty actions encountered for index {idx}: "
+                f"acts={acts} (expected non-empty list of length {self.robot_dof} per row)."
+            )
 
         obs_episode = self.obs_col[obs_episode_idx]
         try:
@@ -175,6 +180,13 @@ class TimeSeriesParquetDataset(Dataset):
             obs_episode = list(obs_episode)
         obs_end_idx = obs_local_idx + int(self.obs_length_sec * self.obs_freq)
         obs = obs_episode[obs_local_idx:obs_end_idx]
+        obs = [[float(x.as_py() if hasattr(x, 'as_py') else x) for x in row] for row in obs]
+        # Check for empty or malformed observations
+        if len(obs) == 0 or (len(obs) > 0 and (not isinstance(obs[0], list) or len(obs[0]) != self.obs_dim)):
+            raise ValueError(
+                f"Malformed or empty observations encountered for index {idx}: "
+                f"obs={obs} (expected non-empty list of length {self.obs_dim} per row)."
+            )
 
         # Sanity check
         self.sanity_check_function(acts, obs)
@@ -186,6 +198,12 @@ class TimeSeriesParquetDataset(Dataset):
             acts = acts[None, :]
         if obs.ndim == 1:
             obs = obs[None, :]
+        if acts.shape[0] == 0 or obs.shape[0] == 0:
+            raise ValueError(
+                f"Empty actions or observations encountered for index {idx}: "
+                f"acts.shape={acts.shape}, obs.shape={obs.shape}. "
+                "This indicates a problem in the dataset creation or slicing logic."
+            )
         if len(acts) < self.acts_seq_length:
             acts = np.pad(
                 acts,
@@ -218,9 +236,14 @@ class TimeSeriesParquetDataset(Dataset):
 
         # Handle video data: extract frames at user-specified offsets
         video_path = self.video_col[global_idx]
-        cap = cv2.VideoCapture(video_path)
+        if hasattr(video_path, "as_py"):
+            video_path = video_path.as_py()
+        cap = cv2.VideoCapture(str(video_path))
         # Use the timestamp of the first action as the reference
-        timestamp = acts[0, 0] if acts.shape[0] > 0 else 0.0
+        if acts.shape[0] > 0 and len(acts.shape) > 1 and acts.shape[1] > 0:
+            timestamp = acts[0, 0]
+        else:
+            timestamp = 0.0
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         # Calculate the frame index corresponding to the timestamp
@@ -236,7 +259,14 @@ class TimeSeriesParquetDataset(Dataset):
                     frame_tensor = torch.tensor(frame, dtype=torch.float32).permute(2, 0, 1)  # CxHxW
                     frames.append(frame_tensor)
         cap.release()
+        # Ensure all video tensors have the same shape, otherwise raise an error
         if frames:
+            shapes = [f.shape for f in frames]
+            if not all(s == shapes[0] for s in shapes):
+                raise ValueError(
+                    f"Inconsistent video frame shapes for index {idx}: {shapes}. "
+                    "All frames must have the same shape for stacking."
+                )
             video_tensor = torch.stack(frames, dim=0)  # (num_frames, C, H, W)
         else:
             video_tensor = None
@@ -287,7 +317,7 @@ class TimeSeriesParquetDataset(Dataset):
 
 
 if __name__ == "__main__":
-    parquet_file = Path("data/data_fromh5.pq")
+    parquet_file = Path("data/data.pq")
     acts_length_sec = 0.1
     obs_length_sec = 0.1
 
